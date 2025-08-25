@@ -1,5 +1,7 @@
 <img height="100" src="https://avatars.githubusercontent.com/u/69470926" width="100"/>
 
+A developer focused on integrating LLM and unstructured data embedding with telecommunications SDN.
+
 [![GitHub](https://img.shields.io/badge/GitHub-jerryt92-blue?logo=github)](https://github.com/jerryt92)
 
 ---
