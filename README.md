@@ -55,7 +55,3 @@ A developer focused on integrating LLM and unstructured data embedding with tele
 - **📋 [个人简历](https://jerryt92.github.io/cv/)**
 
   技术能力和工作经历
-
-- **📢 [公告栏](https://jerryt92.github.io/my_billboard)**
-
-  最新动态
