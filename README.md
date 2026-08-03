@@ -24,6 +24,10 @@
 
   动态反向代理网关
 
+- **🌐 [WOL Manager for Synology DSM](https://github.com/jerryt92/wol-spk)**
+
+  群晖 DSM 原生局域网唤醒工具
+
 - **⚡ [我的3D画廊](./my-3d-gallery)**
 
   存放倾斜摄影建模作品

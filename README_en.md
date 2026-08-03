@@ -24,6 +24,10 @@
 
   Dynamic reverse proxy gateway
 
+- **🌐 [WOL Manager for Synology DSM](https://github.com/jerryt92/wol-spk)**
+
+  Native Wake-on-LAN tool for Synology DSM
+
 - **⚡ [My 3D Gallery](./my-3d-gallery)**
 
   A collection of oblique photography modeling works
