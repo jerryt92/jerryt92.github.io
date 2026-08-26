@@ -14,7 +14,9 @@
 
 - **🤖 [J2Agent](https://github.com/j2agent-ai/j2agent)**  ![GitHub Repo stars](https://img.shields.io/github/stars/j2agent-ai/j2agent?style=social)
 
-  J2Agent 是一个基于 Java 生态的 Agent 平台
+  J2Agent 是一个基于 Java 生态的 Agent 平台。 
+  
+  体验：[j2agent.jerryt92.top](https://j2agent.jerryt92.top)
 
 - **🔌 [Port Multiplexer](https://github.com/jerryt92/port-multiplexer)**
 
