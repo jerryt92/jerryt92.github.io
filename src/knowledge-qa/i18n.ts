@@ -9,7 +9,7 @@ const zh = {
   placeholder: '输入你的问题…',
   send: '发送',
   stop: '停止',
-  welcome: '可以询问 jerryt92 项目相关的各种问题',
+  welcome: '可以询问 jerryt92 的项目相关的各种问题',
   connecting: '连接中',
   thinking: '思考中',
   answering: '正在回答',

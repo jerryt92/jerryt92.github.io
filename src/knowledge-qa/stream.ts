@@ -70,6 +70,27 @@ function isTerminal(state: AgentState | null): boolean {
   return state === 'COMPLETED' || state === 'FAILED' || state === 'CANCELLED'
 }
 
+/** WebSocket 是否仍处于握手中或已连接 */
+function isWsLive(): boolean {
+  return (
+    activeWs != null &&
+    (activeWs.readyState === WebSocket.OPEN ||
+      activeWs.readyState === WebSocket.CONNECTING)
+  )
+}
+
+/**
+ * 同步轮次忙碌态：Agent 非终态 busy，或 WS 仍存活（对齐 j2a，避免 phase=COMPLETE 误放行）。
+ */
+function syncTurnBusy(session: KbQaSession) {
+  if (isTerminal(session.agentState.value)) {
+    session.isBusy.value = false
+    return
+  }
+  session.isBusy.value =
+    isBusyState(session.agentState.value) || isWsLive()
+}
+
 /** 最后一条 user 消息的下标 */
 function findLastUserIndex(list: KbMessage[]): number {
   for (let i = list.length - 1; i >= 0; i--) {
@@ -165,7 +186,6 @@ function applyEnvelope(session: KbQaSession, event: AgentUiEventEnvelope) {
   }
 
   session.agentState.value = event.state || null
-  session.isBusy.value = isBusyState(event.state)
 
   if (event.state === 'FAILED' && event.eventType === 'SYSTEM') {
     const code = payload?.errorCode
@@ -183,8 +203,8 @@ function applyEnvelope(session: KbQaSession, event: AgentUiEventEnvelope) {
       assistant.content = msg
     }
     assistant.streaming = false
-    session.isBusy.value = false
     session.connecting.value = false
+    syncTurnBusy(session)
     return
   }
 
@@ -218,11 +238,12 @@ function applyEnvelope(session: KbQaSession, event: AgentUiEventEnvelope) {
     }
   }
 
-  if (isTerminal(event.state) || event.phase === 'COMPLETE') {
-    // 锚点保留到下一轮发送时再清，避免终态后晚到 delta 再拆气泡
+  if (isTerminal(event.state)) {
     finishActiveAssistant(session)
-    session.isBusy.value = false
+    session.connecting.value = false
   }
+
+  syncTurnBusy(session)
 }
 
 /** 用户主动停止当前轮次 */
@@ -278,7 +299,12 @@ export async function startTurn(
 ): Promise<boolean> {
   const trimmed = content.trim()
   // 同步占锁：须在任何 await 之前，避免双击 / 连按 Enter 重复提交
-  if (!trimmed || session.isBusy.value || session.sending.value) {
+  if (
+    !trimmed ||
+    session.isBusy.value ||
+    session.sending.value ||
+    session.connecting.value
+  ) {
     return false
   }
 
@@ -315,16 +341,16 @@ export async function startTurn(
           assistant.content = session.errorMessage.value
         }
         assistant.streaming = false
-        session.isBusy.value = false
         session.connecting.value = false
         session.agentState.value = 'FAILED'
+        syncTurnBusy(session)
         // 用户气泡已上屏，返回 true 避免输入框回填重复
         return true
       }
     }
     if (!session.sending.value) {
       // 申请 contextId 期间被 stop
-      session.isBusy.value = false
+      syncTurnBusy(session)
       session.connecting.value = false
       return true
     }
@@ -360,6 +386,7 @@ export async function startTurn(
         if (!session.agentState.value) {
           session.agentState.value = 'THINKING'
         }
+        syncTurnBusy(session)
       }
     }
 
@@ -377,10 +404,10 @@ export async function startTurn(
         assistant.content = session.errorMessage.value
       }
       assistant.streaming = false
-      session.isBusy.value = false
       session.connecting.value = false
       session.agentState.value = 'FAILED'
       activeWs = undefined
+      syncTurnBusy(session)
     }
 
     const connect = (attempt: number, resume = false) => {
@@ -389,6 +416,7 @@ export async function startTurn(
       }
       // 重试建联时重新展示连接态
       session.connecting.value = true
+      syncTurnBusy(session)
       detachWebSocket(activeWs)
       const ws = new WebSocket(
         buildChatWebSocketUrl(contextId, locale, { resume })
@@ -420,6 +448,7 @@ export async function startTurn(
             if (activeWs === ws) {
               activeWs = undefined
             }
+            syncTurnBusy(session)
           }
         } catch (error) {
           console.error('[knowledge-qa] parse event failed', error)
@@ -438,6 +467,7 @@ export async function startTurn(
           const delay = WS_HANDSHAKE_RETRY_DELAYS[attempt]
           if (delay !== undefined && !isTerminal(session.agentState.value)) {
             activeWs = undefined
+            syncTurnBusy(session)
             retryTimer = setTimeout(() => connect(attempt + 1, resume), delay)
             return
           }
@@ -447,10 +477,12 @@ export async function startTurn(
         if (isTerminal(session.agentState.value)) {
           session.connecting.value = false
           activeWs = undefined
+          syncTurnBusy(session)
           return
         }
         // 流中断：尝试 resume
         activeWs = undefined
+        syncTurnBusy(session)
         const delay =
           WS_HANDSHAKE_RETRY_DELAYS[
             Math.min(attempt, WS_HANDSHAKE_RETRY_DELAYS.length - 1)

@@ -106,6 +106,7 @@ const canSend = computed(
     !!input.value.trim() &&
     !isBusy.value &&
     !sending.value &&
+    !connecting.value &&
     !isComposing.value
 )
 
@@ -504,37 +505,6 @@ function handleBubbleClick(event: MouseEvent) {
                     </template>
                     <template v-else>
                       <div
-                        v-if="message.content"
-                        class="message-md kb-qa-assistant-md"
-                        :class="{ 'is-streaming': message.streaming }"
-                        :key="`md-${message.index}-${MARKDOWN_RENDERER_REVISION}-${message.content.length}`"
-                        v-html="renderAssistantHtml(message)"
-                      />
-                      <div
-                        v-else-if="message.streaming"
-                        class="kb-qa-typing"
-                        :class="{ 'is-connecting': connecting }"
-                        role="status"
-                      >
-                        <span
-                          v-if="connecting"
-                          class="kb-qa-typing-spinner"
-                          aria-hidden="true"
-                        />
-                        <span v-else class="kb-qa-typing-orb" aria-hidden="true" />
-                        <span class="kb-qa-typing-label">
-                          {{ statusLabel || text.thinking }}
-                        </span>
-                        <span
-                          v-if="!connecting"
-                          class="kb-qa-typing-dots"
-                          aria-hidden="true"
-                        >
-                          <i /><i /><i />
-                        </span>
-                      </div>
-
-                      <div
                         v-if="message.srcFile?.length"
                         class="kb-qa-sources message-md"
                       >
@@ -563,6 +533,37 @@ function handleBubbleClick(event: MouseEvent) {
                             </a>
                           </li>
                         </ul>
+                      </div>
+
+                      <div
+                        v-if="message.content"
+                        class="message-md kb-qa-assistant-md"
+                        :class="{ 'is-streaming': message.streaming }"
+                        :key="`md-${message.index}-${MARKDOWN_RENDERER_REVISION}-${message.content.length}`"
+                        v-html="renderAssistantHtml(message)"
+                      />
+                      <div
+                        v-else-if="message.streaming"
+                        class="kb-qa-typing"
+                        :class="{ 'is-connecting': connecting }"
+                        role="status"
+                      >
+                        <span
+                          v-if="connecting"
+                          class="kb-qa-typing-spinner"
+                          aria-hidden="true"
+                        />
+                        <span v-else class="kb-qa-typing-orb" aria-hidden="true" />
+                        <span class="kb-qa-typing-label">
+                          {{ statusLabel || text.thinking }}
+                        </span>
+                        <span
+                          v-if="!connecting"
+                          class="kb-qa-typing-dots"
+                          aria-hidden="true"
+                        >
+                          <i /><i /><i />
+                        </span>
                       </div>
 
                       <div
@@ -1412,9 +1413,9 @@ function handleBubbleClick(event: MouseEvent) {
 }
 
 .kb-qa-sources {
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px dashed var(--n-color-border-soft);
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--n-color-border-soft);
 }
 
 .kb-qa-sources-title {
