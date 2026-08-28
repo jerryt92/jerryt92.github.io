@@ -2,7 +2,7 @@
  * 单会话 WebSocket 流式对话（精简自 j2agent-ui stream/service + dispatcher）。
  */
 import { ref, type Ref } from 'vue'
-import { buildChatWebSocketUrl, fetchContextId, mergeSrcFiles } from './api'
+import { buildChatWebSocketUrl, fetchContextId, mergeSrcFiles, stopChatTurn } from './api'
 import { knowledgeQaConfig } from './config'
 import { resetStreamMarkdownCache } from './streamMarkdown'
 import type {
@@ -265,6 +265,9 @@ function applyEnvelope(session: KbQaSession, event: AgentUiEventEnvelope) {
         assistant.reasoningContent =
           (assistant.reasoningContent ?? '') + server.reasoningContent
       }
+      if (server.pendingQuestion) {
+        assistant.pendingQuestion = server.pendingQuestion
+      }
       if (server.content) {
         assistant.content = (assistant.content ?? '') + server.content
       }
@@ -280,16 +283,18 @@ function applyEnvelope(session: KbQaSession, event: AgentUiEventEnvelope) {
 }
 
 /** 用户主动停止当前轮次（保留消息与 contextId） */
-export function stopTurn(session: KbQaSession) {
+export function stopTurn(session: KbQaSession, locale: 'zh' | 'en' = 'zh') {
+  const contextId = session.contextId.value
   turnToken = Symbol('stopped')
   clearWsRetryTimer()
   detachWebSocket(activeWs, true)
   activeWs = undefined
   finishActiveAssistant(session)
   session.agentState.value = 'CANCELLED'
-  session.isBusy.value = false
-  session.sending.value = false
-  session.connecting.value = false
+  forceSessionIdle(session)
+  if (contextId) {
+    void stopChatTurn(contextId, locale)
+  }
 }
 
 /**
@@ -348,12 +353,17 @@ export async function resetSession(
 export async function startTurn(
   session: KbQaSession,
   content: string,
-  locale: 'zh' | 'en'
+  locale: 'zh' | 'en',
+  options?: { existingUserMessage?: KbMessage }
 ): Promise<boolean> {
   const trimmed = content.trim()
+  const existingUser = options?.existingUserMessage
+  const existingContent = existingUser?.content?.trim() ?? ''
+  const outboundContent = existingUser ? existingContent : trimmed
+
   // 同步占锁：须在任何 await 之前，避免双击 / 连按 Enter 重复提交
   if (
-    !trimmed ||
+    !outboundContent ||
     session.isBusy.value ||
     session.sending.value ||
     session.connecting.value
@@ -370,12 +380,16 @@ export async function startTurn(
   clearActiveTurnAssistantIndex()
 
   // 先上屏用户消息，再建联（避免等 contextId / WS 才出现气泡）
-  const userMsg: KbMessage = {
-    index: session.messages.value.length,
-    role: 'user',
-    content: trimmed
+  const userMsg: KbMessage =
+    existingUser ??
+    {
+      index: session.messages.value.length,
+      role: 'user',
+      content: outboundContent
+    }
+  if (!existingUser) {
+    session.messages.value.push(userMsg)
   }
-  session.messages.value.push(userMsg)
   ensureAssistant(session)
 
   const turnEpoch = resetEpoch
@@ -417,7 +431,7 @@ export async function startTurn(
         {
           index: userMsg.index,
           role: 'user',
-          content: trimmed
+          content: outboundContent
         }
       ],
       retrievalKb: true,

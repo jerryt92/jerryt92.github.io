@@ -1,5 +1,6 @@
 import {
   knowledgeQaConfig,
+  KNOWLEDGE_QA_ASSISTANT_ID,
   resolveConfiguredBackendOrigin,
   resolveRequestBaseUrl,
   shouldUseDevProxy
@@ -95,7 +96,7 @@ export function buildChatWebSocketUrl(
   return (
     `${wsOrigin}/ws/rest/${PROGRAM_TAG}/chat` +
     `?context-id=${encodeURIComponent(contextId)}` +
-    `&agent-id=${encodeURIComponent('knowledge_qa_assistant')}` +
+    `&agent-id=${encodeURIComponent(KNOWLEDGE_QA_ASSISTANT_ID)}` +
     `&locale=${encodeURIComponent(localeParam)}` +
     resumeQuery +
     authQuery
@@ -199,4 +200,88 @@ export function mergeSrcFiles(
     }
   }
   return [...map.values()]
+}
+
+/** 热门问题条目 */
+export type KbHotQuestion = {
+  question: string
+}
+
+/**
+ * 获取智能体热门问题模板（对齐 j2a getQaTemplate）。
+ */
+export async function fetchQaTemplate(
+  locale: 'zh' | 'en',
+  limit = 4
+): Promise<KbHotQuestion[]> {
+  const base = getBackendBaseUrl()
+  const path = `/v1/rest/${PROGRAM_TAG}/qa-template`
+  const useProxy = shouldUseDevProxy() || !base
+  const params = new URLSearchParams({
+    'agent-id': KNOWLEDGE_QA_ASSISTANT_ID,
+    limit: String(limit)
+  })
+
+  let finalUrl: string
+  let headers: HeadersInit
+  if (useProxy) {
+    finalUrl = `${base}${path}?${params}`
+    headers = getAuthHeaders(locale)
+  } else {
+    params.set('authorization', knowledgeQaConfig.apiKey)
+    finalUrl = `${base}${path}?${params}`
+    headers = {}
+  }
+
+  const response = await fetch(finalUrl, {
+    method: 'GET',
+    headers,
+    cache: 'no-store',
+    credentials: 'omit'
+  })
+  if (!response.ok) {
+    throw new Error(`qa-template HTTP ${response.status}`)
+  }
+  const body = (await response.json()) as
+    | { data?: KbHotQuestion[] }
+    | { data?: { data?: KbHotQuestion[] } }
+  const list = Array.isArray(body.data)
+    ? body.data
+    : body.data?.data
+  return (list ?? []).filter((item) => item.question?.trim())
+}
+
+/**
+ * 主动停止后台对话任务（对齐 j2a stopChatTurn）。
+ */
+export async function stopChatTurn(
+  contextId: string,
+  locale: 'zh' | 'en'
+): Promise<void> {
+  const base = getBackendBaseUrl()
+  const path = `/v1/rest/${PROGRAM_TAG}/chat/stop`
+  const params = new URLSearchParams({
+    'context-id': contextId,
+    'agent-id': KNOWLEDGE_QA_ASSISTANT_ID
+  })
+  const useProxy = shouldUseDevProxy() || !base
+
+  let finalUrl: string
+  let headers: HeadersInit
+  if (useProxy) {
+    finalUrl = `${base}${path}?${params}`
+    headers = getAuthHeaders(locale)
+  } else {
+    params.set('authorization', knowledgeQaConfig.apiKey)
+    finalUrl = `${base}${path}?${params}`
+    headers = { 'Content-Type': 'application/json' }
+  }
+
+  await fetch(finalUrl, {
+    method: 'POST',
+    headers,
+    credentials: 'omit'
+  }).catch((error) => {
+    console.warn('[knowledge-qa] stopChatTurn failed', error)
+  })
 }

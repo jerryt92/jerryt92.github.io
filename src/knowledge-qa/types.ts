@@ -1,3 +1,11 @@
+/** Agent 向用户发起的澄清问题（ask_question 工具） */
+export type KbAskQuestion = {
+  type: 'ask_question'
+  version: number
+  question: string
+  options: string[]
+}
+
 /** 聊天消息（精简自 j2agent MessageDto） */
 export type KbMessage = {
   index: number
@@ -5,6 +13,8 @@ export type KbMessage = {
   content: string
   reasoningContent?: string
   srcFile?: KbSrcFile[]
+  /** assistant 触发的待回答澄清问题 */
+  pendingQuestion?: KbAskQuestion
   /** 是否为流式进行中的助手气泡 */
   streaming?: boolean
 }
@@ -58,6 +68,7 @@ export type AgentUiEventEnvelope = {
       content?: string
       reasoningContent?: string
       srcFile?: KbSrcFile[]
+      pendingQuestion?: KbAskQuestion
     }
     error?: boolean
     errorCode?: string

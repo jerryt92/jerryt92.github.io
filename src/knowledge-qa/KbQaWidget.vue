@@ -15,9 +15,11 @@ import {
 import 'element-plus/es/components/message/style/css'
 import 'element-plus/es/components/image-viewer/style/css'
 import 'element-plus/es/components/icon/style/css'
-import { formatSrcFileLabel } from './api'
+import { formatSrcFileLabel, fetchQaTemplate, type KbHotQuestion } from './api'
 import { knowledgeQaConfig } from './config'
 import { kbQaText, type KbQaLang } from './i18n'
+import KbAgentThinkingBlock from './components/KbAgentThinkingBlock.vue'
+import KbAskQuestionCard from './components/KbAskQuestionCard.vue'
 import { setJ2aLocale } from './j2a/shims/lib'
 import MdViewerOverlay, {
   type MdViewerSource
@@ -49,7 +51,7 @@ import {
   resetActiveStreamSplitCache,
   splitStreamingSegmentsForActiveStream
 } from './streamMarkdown'
-import type { KbSrcFile } from './types'
+import type { KbMessage, KbSrcFile } from './types'
 import logoBlack from './assets/logo-b.svg'
 import logoWhite from './assets/logo-w.svg'
 
@@ -88,6 +90,16 @@ const INPUT_MAX_LENGTH = 200
 const mdViewerVisible = ref(false)
 const mdViewerSources = ref<MdViewerSource[]>([])
 const mdViewerIndex = ref(0)
+/** 欢迎区热门问题 */
+const hotQuestions = ref<KbHotQuestion[]>([])
+const hotQuestionsLoading = ref(false)
+
+/** 澄清问题在 busy 期间先上屏用户气泡，待回合结束后再发 WS */
+type PendingAskAnswer = {
+  questionMessageIndex: number
+  userMessageIndex: number
+}
+const pendingAskAnswer = ref<PendingAskAnswer | null>(null)
 
 const configReady = computed(
   () =>
@@ -323,11 +335,16 @@ watch(isBusy, (busy, wasBusy) => {
     }
   }
   flushActivateMarkdownBlocks()
+  void flushPendingAskQuestionAnswer()
 })
 
 /** 内容变化时仅处理滚动，不触发全量 markdown 重渲染 */
 watch(
-  () => messages.value.map((m) => `${m.index}:${m.content.length}:${m.streaming}`),
+  () =>
+    messages.value.map(
+      (m) =>
+        `${m.index}:${m.content.length}:${m.streaming}:${m.pendingQuestion?.question ?? ''}`
+    ),
   async () => {
     await nextTick()
     if (stickToBottom.value) {
@@ -345,8 +362,29 @@ onMounted(() => {
   setJ2aLocale(props.language)
 })
 
+/** 拉取热门问题（对齐 j2a getQaTemplate） */
+async function loadHotQuestions() {
+  if (!configReady.value || hotQuestionsLoading.value) {
+    return
+  }
+  hotQuestionsLoading.value = true
+  try {
+    hotQuestions.value = await fetchQaTemplate(props.language)
+  } catch {
+    hotQuestions.value = []
+  } finally {
+    hotQuestionsLoading.value = false
+  }
+}
+
+/** 点击热门问题直接发送 */
+function handleHotQuestionClick(question: string) {
+  input.value = question
+  void handleSend()
+}
+
 onBeforeUnmount(() => {
-  stopTurn(session)
+  stopTurn(session, props.language)
   if (copiedTimer) {
     window.clearTimeout(copiedTimer)
   }
@@ -406,6 +444,7 @@ function toggleOpen() {
   }
   morphing.value = true
   open.value = true
+  void loadHotQuestions()
   nextTick(() => inputEl.value?.focus())
 }
 
@@ -425,6 +464,95 @@ function onPanelAfterLeave() {
 
 function isSrcMarkdown(file: KbSrcFile): boolean {
   return isMarkdownFile(resolveMarkdownFileName(file))
+}
+
+/** 是否为当前唯一待回答的澄清问题气泡 */
+function isLatestPendingQuestionMessage(message: KbMessage) {
+  if (!message.pendingQuestion || message.role !== 'assistant') {
+    return false
+  }
+  const list = messages.value
+  const position = list.findIndex((item) => item.index === message.index)
+  if (position < 0) {
+    return false
+  }
+  for (let i = position + 1; i < list.length; i += 1) {
+    if (list[i].role === 'user') {
+      return false
+    }
+  }
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    if (list[i].pendingQuestion) {
+      return list[i].index === message.index
+    }
+  }
+  return false
+}
+
+/** 用户已在 busy 时提交澄清答案，等待回合结束 */
+function isPendingAskQuestionAnswer(message: KbMessage) {
+  return (
+    pendingAskAnswer.value?.questionMessageIndex === message.index
+  )
+}
+
+/** 提交澄清问题答案（对齐 j2a sendAskQuestionAnswer） */
+async function handleAskQuestionAnswer(message: KbMessage, answer: string) {
+  const normalized = answer.trim()
+  if (!normalized || !isLatestPendingQuestionMessage(message)) {
+    return
+  }
+  stickToBottom.value = true
+
+  if (isBusy.value || sending.value || connecting.value) {
+    const userMsg: KbMessage = {
+      index: messages.value.length,
+      role: 'user',
+      content: normalized
+    }
+    messages.value.push(userMsg)
+    pendingAskAnswer.value = {
+      questionMessageIndex: message.index,
+      userMessageIndex: userMsg.index
+    }
+    await nextTick()
+    scrollMessagesToBottom('smooth')
+    return
+  }
+
+  const started = await startTurn(session, normalized, props.language)
+  if (!started) {
+    return
+  }
+  await nextTick()
+  scrollMessagesToBottom('smooth')
+}
+
+/** 回合结束后发送排队中的澄清答案 */
+async function flushPendingAskQuestionAnswer() {
+  const pending = pendingAskAnswer.value
+  if (!pending || isBusy.value || sending.value || connecting.value) {
+    return
+  }
+  const userMsg = messages.value.find(
+    (item) => item.index === pending.userMessageIndex && item.role === 'user'
+  )
+  const questionMsg = messages.value.find(
+    (item) =>
+      item.index === pending.questionMessageIndex && item.role === 'assistant'
+  )
+  if (!userMsg?.content.trim() || !questionMsg?.pendingQuestion) {
+    pendingAskAnswer.value = null
+    return
+  }
+  pendingAskAnswer.value = null
+  const started = await startTurn(session, userMsg.content, props.language, {
+    existingUserMessage: userMsg
+  })
+  if (started) {
+    await nextTick()
+    scrollMessagesToBottom('smooth')
+  }
 }
 
 function srcLabel(file: KbSrcFile): string {
@@ -480,12 +608,13 @@ async function handleSend() {
 }
 
 function handleStop() {
-  stopTurn(session)
+  stopTurn(session, props.language)
 }
 
 /** 新建对话：同步切断上一轮并申请新 contextId */
 async function handleNewChat() {
   cutSessionImmediately(session)
+  pendingAskAnswer.value = null
   input.value = ''
   resetting.value = true
   try {
@@ -675,6 +804,31 @@ function handleBubbleClick(event: MouseEvent) {
                 <p v-if="!configReady" class="kb-qa-config-hint">
                   {{ text.emptyConfig }}
                 </p>
+                <div
+                  v-else-if="hotQuestions.length"
+                  class="kb-qa-hot-questions"
+                >
+                  <div class="kb-qa-hot-head">
+                    <span class="kb-qa-hot-title">{{ text.hotQuestions }}</span>
+                    <button
+                      type="button"
+                      class="kb-qa-hot-refresh"
+                      :disabled="hotQuestionsLoading"
+                      @click="loadHotQuestions"
+                    >
+                      {{ text.refreshHotQuestions }}
+                    </button>
+                  </div>
+                  <button
+                    v-for="(item, index) in hotQuestions"
+                    :key="`${item.question}-${index}`"
+                    type="button"
+                    class="kb-qa-hot-item"
+                    @click="handleHotQuestionClick(item.question)"
+                  >
+                    {{ item.question }}
+                  </button>
+                </div>
               </div>
 
               <p v-if="errorMessage" class="kb-qa-error" role="alert">
@@ -700,6 +854,14 @@ function handleBubbleClick(event: MouseEvent) {
                       <div class="kb-qa-user-text">{{ message.content }}</div>
                     </template>
                     <template v-else>
+                      <KbAgentThinkingBlock
+                        v-if="message.reasoningContent?.trim()"
+                        :content="message.reasoningContent"
+                        :title="text.thinkingTitle"
+                        :active="
+                          isActiveAssistantTurn(message.index) && isBusy
+                        "
+                      />
                       <div
                         v-if="message.srcFile?.length"
                         class="kb-qa-sources message-md"
@@ -765,8 +927,21 @@ function handleBubbleClick(event: MouseEvent) {
                           />
                         </div>
                       </div>
+                      <KbAskQuestionCard
+                        v-if="message.pendingQuestion"
+                        :question="message.pendingQuestion"
+                        :disabled="
+                          sending ||
+                          !isLatestPendingQuestionMessage(message)
+                        "
+                        :pending="isPendingAskQuestionAnswer(message)"
+                        :custom-placeholder="text.askCustomPlaceholder"
+                        :send-label="text.askSend"
+                        :empty-hint="text.askEmpty"
+                        @answer="(answer) => handleAskQuestionAnswer(message, answer)"
+                      />
                       <div
-                        v-else-if="message.streaming"
+                        v-if="!message.content && message.streaming"
                         class="kb-qa-typing"
                         role="status"
                       >
@@ -1360,6 +1535,62 @@ function handleBubbleClick(event: MouseEvent) {
   color: var(--n-color-text-tertiary);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.kb-qa-hot-questions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(100%, 360px);
+  margin-top: 4px;
+}
+
+.kb-qa-hot-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.kb-qa-hot-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--n-color-text-secondary);
+}
+
+.kb-qa-hot-refresh {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 12px;
+  color: var(--n-color-primary);
+  cursor: pointer;
+}
+
+.kb-qa-hot-refresh:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.kb-qa-hot-item {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--n-color-text) 10%, transparent);
+  background: color-mix(in srgb, var(--n-color-bg-elevated) 92%, transparent);
+  color: var(--n-color-text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.18s ease,
+    background 0.18s ease;
+}
+
+.kb-qa-hot-item:hover {
+  border-color: color-mix(in srgb, var(--n-color-primary) 35%, transparent);
+  background: color-mix(in srgb, var(--n-color-primary) 6%, transparent);
 }
 
 .kb-qa-error {
