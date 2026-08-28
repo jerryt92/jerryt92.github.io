@@ -4,6 +4,7 @@
 import { ref, type Ref } from 'vue'
 import { buildChatWebSocketUrl, fetchContextId, mergeSrcFiles } from './api'
 import { knowledgeQaConfig } from './config'
+import { resetStreamMarkdownCache } from './streamMarkdown'
 import type {
   AgentState,
   AgentUiEventEnvelope,
@@ -41,14 +42,31 @@ export function createKbQaSession(): KbQaSession {
 
 let activeWs: WebSocket | undefined
 let turnToken: symbol | undefined
+/** WS 重连定时器，新建对话 / 停止时须清除 */
+let wsRetryTimer: ReturnType<typeof setTimeout> | undefined
+/** 新建对话代次，用于丢弃过期的 contextId 申请 */
+let resetEpoch = 0
 /** 当前轮次唯一 assistant 气泡下标（对齐 j2a，避免同轮分裂） */
 let activeTurnAssistantIndex: number | null = null
+
+/** 清除 WS 重连定时器 */
+function clearWsRetryTimer() {
+  if (wsRetryTimer) {
+    clearTimeout(wsRetryTimer)
+    wsRetryTimer = undefined
+  }
+}
 
 /** 拆除 WebSocket，避免晚到消息污染 UI */
 function detachWebSocket(ws: WebSocket | undefined, interrupt = false) {
   if (!ws) {
     return
   }
+  // 先卸回调，避免 close 同步触发 onclose/onmessage 把 busy 写回
+  ws.onopen = null
+  ws.onmessage = null
+  ws.onerror = null
+  ws.onclose = null
   try {
     if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
       ws.close(1000, interrupt ? 'user interrupt' : 'client detach')
@@ -56,10 +74,14 @@ function detachWebSocket(ws: WebSocket | undefined, interrupt = false) {
   } catch {
     /* ignore */
   }
-  ws.onopen = null
-  ws.onmessage = null
-  ws.onerror = null
-  ws.onclose = null
+}
+
+/** 强制会话回到空闲（新建对话 / 中断过期的 startTurn 时调用） */
+function forceSessionIdle(session: KbQaSession) {
+  session.agentState.value = 'CANCELLED'
+  session.isBusy.value = false
+  session.sending.value = false
+  session.connecting.value = false
 }
 
 function isBusyState(state: AgentState | null): boolean {
@@ -122,6 +144,17 @@ function findReusableEmptyAssistantIndex(list: KbMessage[]): number | null {
 /** 清空本轮气泡锚点（新轮次发送 / 重置会话时调用） */
 function clearActiveTurnAssistantIndex() {
   activeTurnAssistantIndex = null
+}
+
+/** 当前轮次 assistant 的 message.index；无锚点或越界时返回 -1 */
+export function getActiveTurnAssistantMessageIndex(
+  session: KbQaSession
+): number {
+  if (activeTurnAssistantIndex === null) {
+    return -1
+  }
+  const msg = session.messages.value[activeTurnAssistantIndex]
+  return msg?.role === 'assistant' ? msg.index : -1
 }
 
 /**
@@ -246,9 +279,10 @@ function applyEnvelope(session: KbQaSession, event: AgentUiEventEnvelope) {
   syncTurnBusy(session)
 }
 
-/** 用户主动停止当前轮次 */
+/** 用户主动停止当前轮次（保留消息与 contextId） */
 export function stopTurn(session: KbQaSession) {
   turnToken = Symbol('stopped')
+  clearWsRetryTimer()
   detachWebSocket(activeWs, true)
   activeWs = undefined
   finishActiveAssistant(session)
@@ -259,32 +293,51 @@ export function stopTurn(session: KbQaSession) {
 }
 
 /**
- * 新建对话：停止当前轮次、清空消息，并向服务端申请新的 contextId。
- * @returns 是否成功拿到新 id（失败时 contextId 为空，下次发送会再申请）
+ * 同步切断当前对话：拆 WS、清空消息、作废 contextId（新建对话首步调用）。
+ */
+export function cutSessionImmediately(session: KbQaSession) {
+  resetEpoch += 1
+  turnToken = Symbol('cut')
+  clearWsRetryTimer()
+  detachWebSocket(activeWs, true)
+  activeWs = undefined
+  finishActiveAssistant(session)
+  session.messages.value = []
+  clearActiveTurnAssistantIndex()
+  resetStreamMarkdownCache()
+  session.agentState.value = null
+  session.errorMessage.value = null
+  session.contextId.value = undefined
+  forceSessionIdle(session)
+}
+
+/**
+ * 新建对话：立即切断上一轮，并向服务端申请新的 contextId。
+ * 注意：此处仅走 REST，不占用 connecting（该标志专用于 WS 建联）。
  */
 export async function resetSession(
   session: KbQaSession,
   locale: 'zh' | 'en'
 ): Promise<boolean> {
-  stopTurn(session)
-  session.messages.value = []
-  clearActiveTurnAssistantIndex()
-  session.agentState.value = null
-  session.errorMessage.value = null
-  session.contextId.value = undefined
-  session.connecting.value = true
+  cutSessionImmediately(session)
+  const epoch = resetEpoch
   try {
-    session.contextId.value = await fetchContextId(locale)
+    const contextId = await fetchContextId(locale)
+    if (epoch !== resetEpoch) {
+      return false
+    }
+    session.contextId.value = contextId
     return true
   } catch (error) {
+    if (epoch !== resetEpoch) {
+      return false
+    }
     console.error('[knowledge-qa] resetSession fetchContextId failed', error)
     session.errorMessage.value =
       locale === 'zh'
         ? '无法创建新会话，请检查网络或后端 CORS'
         : 'Failed to create a new session. Check network or CORS.'
     return false
-  } finally {
-    session.connecting.value = false
   }
 }
 
@@ -325,6 +378,8 @@ export async function startTurn(
   session.messages.value.push(userMsg)
   ensureAssistant(session)
 
+  const turnEpoch = resetEpoch
+
   try {
     // 本页生命周期内复用同一 contextId；刷新页面后内存清空，会重新向服务端申请
     if (!session.contextId.value) {
@@ -348,10 +403,9 @@ export async function startTurn(
         return true
       }
     }
-    if (!session.sending.value) {
-      // 申请 contextId 期间被 stop
-      syncTurnBusy(session)
-      session.connecting.value = false
+    if (turnEpoch !== resetEpoch || !session.sending.value) {
+      // 申请 contextId 期间被新建对话 / 停止打断
+      forceSessionIdle(session)
       return true
     }
 
@@ -371,6 +425,11 @@ export async function startTurn(
       knowledgeCollections: [knowledgeQaConfig.knowledgeBaseId]
     }
 
+    if (turnEpoch !== resetEpoch) {
+      forceSessionIdle(session)
+      return true
+    }
+
     const token = Symbol('chat-ws-turn')
     turnToken = token
     detachWebSocket(activeWs)
@@ -379,6 +438,19 @@ export async function startTurn(
     let retryTimer: ReturnType<typeof setTimeout> | undefined
 
     const isCurrent = () => turnToken === token
+
+    const scheduleWsRetry = (fn: () => void, delay: number) => {
+      if (retryTimer) {
+        clearTimeout(retryTimer)
+      }
+      clearWsRetryTimer()
+      wsRetryTimer = setTimeout(() => {
+        wsRetryTimer = undefined
+        retryTimer = undefined
+        fn()
+      }, delay)
+      retryTimer = wsRetryTimer
+    }
 
     const markConnected = () => {
       if (isCurrent()) {
@@ -396,7 +468,9 @@ export async function startTurn(
       }
       if (retryTimer) {
         clearTimeout(retryTimer)
+        retryTimer = undefined
       }
+      clearWsRetryTimer()
       session.errorMessage.value =
         locale === 'zh' ? '连接失败，请稍后重试' : 'Connection failed'
       const assistant = ensureAssistant(session)
@@ -468,7 +542,7 @@ export async function startTurn(
           if (delay !== undefined && !isTerminal(session.agentState.value)) {
             activeWs = undefined
             syncTurnBusy(session)
-            retryTimer = setTimeout(() => connect(attempt + 1, resume), delay)
+            scheduleWsRetry(() => connect(attempt + 1, resume), delay)
             return
           }
           failHandshake()
@@ -487,7 +561,7 @@ export async function startTurn(
           WS_HANDSHAKE_RETRY_DELAYS[
             Math.min(attempt, WS_HANDSHAKE_RETRY_DELAYS.length - 1)
           ]
-        retryTimer = setTimeout(() => connect(attempt + 1, true), delay)
+        scheduleWsRetry(() => connect(attempt + 1, true), delay)
       }
     }
 

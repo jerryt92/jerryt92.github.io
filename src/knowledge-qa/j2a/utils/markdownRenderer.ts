@@ -630,6 +630,21 @@ md.renderer.rules.link_open = function(tokens, idx, options, env, self) {
   return self.renderToken(tokens, idx, options)
 }
 
+/** 图片默认懒加载，减轻流式输出时主线程解码压力 */
+const defaultImageRule = md.renderer.rules.image?.bind(md.renderer.rules)
+if (defaultImageRule) {
+  md.renderer.rules.image = (tokens, idx, options, env, self) => {
+    const token = tokens[idx]
+    if (token.attrIndex('loading') < 0) {
+      token.attrPush(['loading', 'lazy'])
+    }
+    if (token.attrIndex('decoding') < 0) {
+      token.attrPush(['decoding', 'async'])
+    }
+    return defaultImageRule(tokens, idx, options, env, self)
+  }
+}
+
 md.renderer.rules.table_open = function() {
   return '<div class="md-table-wrap"><table class="md-table">'
 }

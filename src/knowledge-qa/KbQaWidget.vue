@@ -28,12 +28,28 @@ import {
 } from './j2a/utils/repoFileUrl'
 import {
   MARKDOWN_RENDERER_REVISION,
+  buildMarkdownPrefetchRootMargin,
+  hasPendingMarkdownBlocks,
+  normalizeMarkdownImageParagraphs,
   renderMarkdownBlocks,
-  renderMarkdownCached
+  scheduleUpdateStreamTailSegmentInPlace
 } from './j2a/utils/markdownRenderer'
 import './j2a/styles/markdown.scss'
-import { createKbQaSession, resetSession, startTurn, stopTurn } from './stream'
-import type { KbMessage, KbSrcFile } from './types'
+import {
+  createKbQaSession,
+  cutSessionImmediately,
+  getActiveTurnAssistantMessageIndex,
+  resetSession,
+  startTurn,
+  stopTurn
+} from './stream'
+import {
+  buildAssistantRenderedSegmentsMap,
+  getActiveAssistantTailText,
+  resetActiveStreamSplitCache,
+  splitStreamingSegmentsForActiveStream
+} from './streamMarkdown'
+import type { KbSrcFile } from './types'
 import logoBlack from './assets/logo-b.svg'
 import logoWhite from './assets/logo-w.svg'
 
@@ -117,29 +133,210 @@ const fabAriaLabel = computed(() => {
   return text.value.fab
 })
 
+/** 当前流式 assistant 的 message.index */
+const activeAssistantMessageIndex = computed(() =>
+  isBusy.value ? getActiveTurnAssistantMessageIndex(session) : -1
+)
+
+/** assistant 消息分段 HTML（流式尾段不走 v-html，就地更新） */
+const assistantRenderedSegments = computed(() =>
+  buildAssistantRenderedSegmentsMap(
+    messages.value,
+    isBusy.value,
+    activeAssistantMessageIndex.value
+  )
+)
+
+/** 当前流式尾段原文 */
+const activeAssistantTailText = computed(() =>
+  getActiveAssistantTailText(
+    messages.value,
+    isBusy.value,
+    activeAssistantMessageIndex.value
+  )
+)
+
+/** 流式尾段 DOM 容器（scheduleUpdateStreamTailSegmentInPlace 目标） */
+const activeTailSegmentEl = ref<HTMLElement | null>(null)
+
+const bindActiveTailSegmentRef = (el: unknown) => {
+  activeTailSegmentEl.value = el instanceof HTMLElement ? el : null
+}
+
+/** 是否为当前轮次正在流式输出的 assistant 消息 */
+function isActiveAssistantTurn(messageIndex: number) {
+  return (
+    isBusy.value && messageIndex === activeAssistantMessageIndex.value
+  )
+}
+
+const MARKDOWN_BLOCKS_DEBOUNCE_MS = 100
+let markdownBlocksDebounceTimer: ReturnType<typeof setTimeout> | null = null
+
+/** 流式期间仅扫描当前 assistant 气泡，避免全列表 querySelector */
+function getMarkdownBlocksScope(): Element | null {
+  const listRoot = messagesEl.value
+  if (!listRoot || !isBusy.value) {
+    return listRoot
+  }
+  const msgIndex = activeAssistantMessageIndex.value
+  if (msgIndex < 0) {
+    return listRoot
+  }
+  const row = listRoot.querySelector(`[data-message-index="${msgIndex}"]`)
+  return row ?? listRoot
+}
+
+function buildMarkdownBlocksRenderOptions() {
+  const scrollRoot = messagesEl.value
+  return {
+    deferDiagrams: isBusy.value,
+    scrollRoot,
+    prefetchRootMargin: scrollRoot
+      ? buildMarkdownPrefetchRootMargin(scrollRoot)
+      : undefined,
+    concurrency: 2,
+    lazy: true
+  }
+}
+
+function runMarkdownBlocks() {
+  nextTick(() => {
+    const listRoot = messagesEl.value
+    if (!listRoot) {
+      return
+    }
+    const scopeRoot = getMarkdownBlocksScope() ?? listRoot
+    const renderOptions = buildMarkdownBlocksRenderOptions()
+    normalizeMarkdownImageParagraphs(scopeRoot)
+    if (!hasPendingMarkdownBlocks(scopeRoot, renderOptions)) {
+      return
+    }
+    void renderMarkdownBlocks(scopeRoot, renderOptions)
+      .then(() => {
+        if (stickToBottom.value) {
+          scrollMessagesToBottom('auto')
+        }
+      })
+      .catch((error) => {
+        console.error('[knowledge-qa] markdown blocks render failed', error)
+      })
+  })
+}
+
+/** 防抖激活图表 / HTML 预览块 */
+function activateMarkdownBlocks() {
+  if (markdownBlocksDebounceTimer !== null) {
+    clearTimeout(markdownBlocksDebounceTimer)
+  }
+  markdownBlocksDebounceTimer = setTimeout(() => {
+    markdownBlocksDebounceTimer = null
+    runMarkdownBlocks()
+  }, MARKDOWN_BLOCKS_DEBOUNCE_MS)
+}
+
+/** 流式结束或新消息入列时立即渲染 */
+function flushActivateMarkdownBlocks() {
+  if (markdownBlocksDebounceTimer !== null) {
+    clearTimeout(markdownBlocksDebounceTimer)
+    markdownBlocksDebounceTimer = null
+  }
+  runMarkdownBlocks()
+}
+
 watch(
   () => props.language,
   (lang) => setJ2aLocale(lang),
   { immediate: true }
 )
 
+/** 流式尾段就地增量更新，避免每 token 销毁 pending 图表占位 */
+watch(
+  [activeAssistantTailText, activeTailSegmentEl],
+  ([tailText, el]) => {
+    if (!tailText || !el) {
+      return
+    }
+    scheduleUpdateStreamTailSegmentInPlace(el, tailText, true)
+  },
+  { flush: 'post' }
+)
+
+/** 围栏闭合产生新稳定段时再触发图表渲染 */
+watch(
+  () => {
+    if (!isBusy.value) {
+      return 0
+    }
+    const idx = activeAssistantMessageIndex.value
+    if (idx < 0) {
+      return 0
+    }
+    const message = messages.value.find((item) => item.index === idx)
+    if (!message?.content) {
+      return 0
+    }
+    return splitStreamingSegmentsForActiveStream(message.content).filter(
+      (seg) => seg.complete
+    ).length
+  },
+  (count, prev) => {
+    if (count <= (prev ?? 0)) {
+      return
+    }
+    nextTick(() => {
+      flushActivateMarkdownBlocks()
+    })
+  }
+)
+
+/** 新消息入列或流式结束后补渲染图表块 */
+watch(
+  () => [messages.value.length, isBusy.value] as const,
+  ([length, busy], prev) => {
+    if (busy) {
+      return
+    }
+    const prevLength = prev?.[0]
+    if (prevLength !== undefined && length === prevLength) {
+      return
+    }
+    flushActivateMarkdownBlocks()
+  }
+)
+
+/** 流式结束：补全尾段并立即激活图表 */
+watch(isBusy, (busy, wasBusy) => {
+  if (busy || !wasBusy) {
+    return
+  }
+  resetActiveStreamSplitCache()
+  const el = activeTailSegmentEl.value
+  const idx = getActiveTurnAssistantMessageIndex(session)
+  if (el && idx >= 0) {
+    const message = messages.value.find((item) => item.index === idx)
+    if (message?.content && message.role === 'assistant') {
+      const tail = splitStreamingSegmentsForActiveStream(message.content).at(-1)
+      if (tail?.text) {
+        scheduleUpdateStreamTailSegmentInPlace(el, tail.text, false, true)
+      }
+    }
+  }
+  flushActivateMarkdownBlocks()
+})
+
+/** 内容变化时仅处理滚动，不触发全量 markdown 重渲染 */
 watch(
   () => messages.value.map((m) => `${m.index}:${m.content.length}:${m.streaming}`),
   async () => {
     await nextTick()
-    const root = messagesEl.value
-    if (!root) {
-      return
-    }
-    void renderMarkdownBlocks(root, {
-      scrollRoot: root,
-      concurrency: 2,
-      lazy: true
-    })
     if (stickToBottom.value) {
-      scrollMessagesToBottom('smooth')
+      scrollMessagesToBottom('auto')
     } else {
       updateScrollBottomVisibility()
+    }
+    if (!isBusy.value) {
+      activateMarkdownBlocks()
     }
   }
 )
@@ -152,6 +349,10 @@ onBeforeUnmount(() => {
   stopTurn(session)
   if (copiedTimer) {
     window.clearTimeout(copiedTimer)
+  }
+  if (markdownBlocksDebounceTimer !== null) {
+    clearTimeout(markdownBlocksDebounceTimer)
+    markdownBlocksDebounceTimer = null
   }
 })
 
@@ -222,13 +423,6 @@ function onPanelAfterLeave() {
   morphing.value = false
 }
 
-function renderAssistantHtml(message: KbMessage): string {
-  if (!message.content?.trim()) {
-    return ''
-  }
-  return renderMarkdownCached(message.content)
-}
-
 function isSrcMarkdown(file: KbSrcFile): boolean {
   return isMarkdownFile(resolveMarkdownFileName(file))
 }
@@ -289,13 +483,11 @@ function handleStop() {
   stopTurn(session)
 }
 
-/** 新建对话：清空气泡并立即申请新的 contextId */
+/** 新建对话：同步切断上一轮并申请新 contextId */
 async function handleNewChat() {
-  if (resetting.value) {
-    return
-  }
-  resetting.value = true
+  cutSessionImmediately(session)
   input.value = ''
+  resetting.value = true
   try {
     await resetSession(session, props.language)
     await nextTick()
@@ -321,6 +513,9 @@ function onKeydown(event: KeyboardEvent) {
   }
   // 组字确认键：不拦截，避免残缺字符被当成发送
   if (event.isComposing || isComposing.value || event.keyCode === 229) {
+    return
+  }
+  if (!canSend.value) {
     return
   }
   event.preventDefault()
@@ -434,7 +629,7 @@ function handleBubbleClick(event: MouseEvent) {
               <button
                 type="button"
                 class="kb-qa-icon-btn"
-                :disabled="resetting"
+                :class="{ 'is-loading': resetting }"
                 :title="text.newChat"
                 :aria-label="text.newChat"
                 @click="handleNewChat"
@@ -492,6 +687,7 @@ function handleBubbleClick(event: MouseEvent) {
                   :key="`${message.index}-${message.role}`"
                   class="kb-qa-row"
                   :class="message.role"
+                  :data-message-index="message.index"
                 >
                   <div
                     class="kb-qa-bubble"
@@ -537,31 +733,47 @@ function handleBubbleClick(event: MouseEvent) {
 
                       <div
                         v-if="message.content"
+                        :key="`assistant-md-${message.index}-${MARKDOWN_RENDERER_REVISION}`"
                         class="message-md kb-qa-assistant-md"
                         :class="{ 'is-streaming': message.streaming }"
-                        :key="`md-${message.index}-${MARKDOWN_RENDERER_REVISION}-${message.content.length}`"
-                        v-html="renderAssistantHtml(message)"
-                      />
+                      >
+                        <div
+                          v-for="(seg, segIdx) in assistantRenderedSegments.get(
+                            message.index
+                          ) ?? []"
+                          :key="segIdx"
+                          class="assistant-stream-segment"
+                          :data-md-stream-tail="
+                            isActiveAssistantTurn(message.index) &&
+                            !seg.complete &&
+                            isBusy
+                              ? ''
+                              : null
+                          "
+                        >
+                          <div
+                            v-if="
+                              isActiveAssistantTurn(message.index) &&
+                              !seg.complete &&
+                              isBusy
+                            "
+                            :ref="bindActiveTailSegmentRef"
+                          />
+                          <div
+                            v-else
+                            v-html="seg.html"
+                          />
+                        </div>
+                      </div>
                       <div
                         v-else-if="message.streaming"
                         class="kb-qa-typing"
-                        :class="{ 'is-connecting': connecting }"
                         role="status"
                       >
-                        <span
-                          v-if="connecting"
-                          class="kb-qa-typing-spinner"
-                          aria-hidden="true"
-                        />
-                        <span v-else class="kb-qa-typing-orb" aria-hidden="true" />
                         <span class="kb-qa-typing-label">
                           {{ statusLabel || text.thinking }}
                         </span>
-                        <span
-                          v-if="!connecting"
-                          class="kb-qa-typing-dots"
-                          aria-hidden="true"
-                        >
+                        <span class="kb-qa-typing-dots" aria-hidden="true">
                           <i /><i /><i />
                         </span>
                       </div>
@@ -610,10 +822,7 @@ function handleBubbleClick(event: MouseEvent) {
           </div>
 
           <footer class="kb-qa-footer">
-            <div
-              class="kb-qa-input-shell"
-              :class="{ 'is-connecting': connecting }"
-            >
+            <div class="kb-qa-input-shell">
               <textarea
                 ref="inputEl"
                 v-model="input"
@@ -621,29 +830,20 @@ function handleBubbleClick(event: MouseEvent) {
                 rows="2"
                 :maxlength="INPUT_MAX_LENGTH"
                 :placeholder="text.placeholder"
-                :disabled="!configReady || sending"
+                :disabled="!configReady || isBusy || sending"
                 @keydown="onKeydown"
                 @compositionstart="onCompositionStart"
                 @compositionend="onCompositionEnd"
               />
               <button
-                v-if="isBusy && !connecting"
+                v-if="isBusy"
                 type="button"
-                class="kb-qa-send kb-qa-send--stop"
-                :aria-label="text.stop"
-                @click="handleStop"
-              >
-                <span class="kb-qa-send-stop-square" aria-hidden="true" />
-              </button>
-              <button
-                v-else-if="connecting"
-                type="button"
-                class="kb-qa-send kb-qa-send--connecting"
-                :aria-label="text.connecting"
+                class="kb-qa-send kb-qa-send--busy"
+                :aria-label="statusLabel || text.stop"
                 :title="text.stop"
                 @click="handleStop"
               >
-                <span class="kb-qa-send-spinner" aria-hidden="true" />
+                <span class="kb-qa-send-stop-square" aria-hidden="true" />
               </button>
               <button
                 v-else
@@ -686,6 +886,10 @@ function handleBubbleClick(event: MouseEvent) {
   --kb-qa-z: 1200;
   --kb-qa-ease: cubic-bezier(0.22, 1, 0.36, 1);
   --kb-qa-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  /* 停止按钮专用色 */
+  --kb-qa-busy: #ff3b30;
+  --kb-qa-busy-bg: color-mix(in srgb, var(--kb-qa-busy) 92%, #111);
+  --kb-qa-busy-bg-hover: color-mix(in srgb, var(--kb-qa-busy) 96%, #000);
   --el-color-primary: var(--n-color-primary);
   --n-dialog-border-radius: 16px;
   --n-font-size-2: 14px;
@@ -791,14 +995,14 @@ function handleBubbleClick(event: MouseEvent) {
   animation: kb-qa-fab-breathe 1.6s ease-in-out infinite;
 }
 
-.kb-qa-fab.is-busy .kb-qa-fab-ring {
-  animation: none;
-  opacity: 0;
-}
-
 .kb-qa-fab.is-busy .kb-qa-fab-spin {
   opacity: 1;
   animation: kb-qa-fab-spin 1.1s linear infinite;
+}
+
+.kb-qa-fab.is-busy .kb-qa-fab-ring {
+  animation: none;
+  opacity: 0;
 }
 
 .kb-qa-fab-core {
@@ -1302,77 +1506,16 @@ function handleBubbleClick(event: MouseEvent) {
 .kb-qa-typing {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   min-height: 28px;
-  padding: 2px 2px 2px 0;
+  padding: 2px 0;
   color: var(--n-color-text-tertiary);
   font-size: 13px;
-  animation: kb-qa-typing-fade-in 0.45s var(--kb-qa-ease-out) both;
-}
-
-@keyframes kb-qa-typing-fade-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-    filter: blur(3px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-    filter: blur(0);
-  }
-}
-
-.kb-qa-typing-orb {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  background: radial-gradient(
-    circle at 35% 35%,
-    color-mix(in srgb, var(--n-color-primary) 85%, white),
-    var(--n-color-primary) 70%
-  );
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--n-color-primary) 16%, transparent);
-  animation: kb-qa-typing-orb 1.4s ease-in-out infinite;
-}
-
-@keyframes kb-qa-typing-orb {
-  0%,
-  100% {
-    transform: scale(1);
-    opacity: 1;
-  }
-  50% {
-    transform: scale(0.78);
-    opacity: 0.7;
-  }
 }
 
 .kb-qa-typing-label {
   letter-spacing: 0.01em;
-  background: linear-gradient(
-    90deg,
-    var(--n-color-text-tertiary) 0%,
-    var(--n-color-text-tertiary) 40%,
-    color-mix(in srgb, var(--n-color-primary) 70%, var(--n-color-text-tertiary)) 50%,
-    var(--n-color-text-tertiary) 60%,
-    var(--n-color-text-tertiary) 100%
-  );
-  background-size: 220% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  animation: kb-qa-typing-shimmer 2.2s ease-in-out infinite;
-}
-
-@keyframes kb-qa-typing-shimmer {
-  0% {
-    background-position: 100% 0;
-  }
-  100% {
-    background-position: -100% 0;
-  }
+  color: var(--n-color-text-tertiary);
 }
 
 .kb-qa-typing-dots {
@@ -1387,7 +1530,6 @@ function handleBubbleClick(event: MouseEvent) {
   height: 6px;
   border-radius: 50%;
   background: color-mix(in srgb, var(--n-color-primary) 75%, var(--n-color-text-tertiary));
-  box-shadow: 0 0 6px color-mix(in srgb, var(--n-color-primary) 28%, transparent);
   animation: kb-qa-dot 1.15s ease-in-out infinite;
 }
 
@@ -1514,28 +1656,6 @@ function handleBubbleClick(event: MouseEvent) {
     0 0 0 3px color-mix(in srgb, var(--n-color-primary) 12%, transparent);
 }
 
-.kb-qa-input-shell.is-connecting {
-  border-color: color-mix(in srgb, var(--n-color-primary) 35%, var(--n-color-border-soft));
-  box-shadow:
-    var(--n-shadow-elevation-1),
-    0 0 0 3px color-mix(in srgb, var(--n-color-primary) 10%, transparent);
-  animation: kb-qa-shell-breathe 1.4s ease-in-out infinite;
-}
-
-@keyframes kb-qa-shell-breathe {
-  0%,
-  100% {
-    box-shadow:
-      var(--n-shadow-elevation-1),
-      0 0 0 3px color-mix(in srgb, var(--n-color-primary) 8%, transparent);
-  }
-  50% {
-    box-shadow:
-      var(--n-shadow-elevation-1),
-      0 0 0 5px color-mix(in srgb, var(--n-color-primary) 16%, transparent);
-  }
-}
-
 .kb-qa-input {
   flex: 1;
   min-width: 0;
@@ -1582,22 +1702,12 @@ function handleBubbleClick(event: MouseEvent) {
   cursor: not-allowed;
 }
 
-.kb-qa-send--stop {
-  background: color-mix(in srgb, #ff3b30 90%, #111);
+.kb-qa-send--busy {
+  background: var(--kb-qa-busy-bg);
 }
 
-.kb-qa-send--connecting {
-  background: var(--n-color-primary);
-  cursor: pointer;
-}
-
-.kb-qa-send-spinner {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  border: 2px solid color-mix(in srgb, var(--n-color-text-inverse) 35%, transparent);
-  border-top-color: var(--n-color-text-inverse);
-  animation: kb-qa-spin 0.7s linear infinite;
+.kb-qa-send--busy:hover {
+  background: var(--kb-qa-busy-bg-hover);
 }
 
 .kb-qa-send-stop-square {
@@ -1605,24 +1715,6 @@ function handleBubbleClick(event: MouseEvent) {
   height: 10px;
   border-radius: 2px;
   background: currentColor;
-}
-
-.kb-qa-typing.is-connecting .kb-qa-typing-label {
-  color: color-mix(in srgb, var(--n-color-primary) 75%, var(--n-color-text-tertiary));
-  background: none;
-  -webkit-background-clip: unset;
-  background-clip: unset;
-  animation: none;
-}
-
-.kb-qa-typing-spinner {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  border: 2px solid color-mix(in srgb, var(--n-color-primary) 25%, transparent);
-  border-top-color: var(--n-color-primary);
-  animation: kb-qa-spin 0.75s linear infinite;
-  flex-shrink: 0;
 }
 
 @keyframes kb-qa-spin {
