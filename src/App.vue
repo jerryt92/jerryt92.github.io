@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import MarkdownIt from 'markdown-it'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+
+const KbQaWidget = defineAsyncComponent(() => import('./knowledge-qa/KbQaWidget.vue'))
 
 type Language = 'zh' | 'en'
 type ThemePreference = 'system' | 'light' | 'dark'
@@ -373,4 +375,6 @@ async function loadMarkdown() {
       </a>
     </div>
   </footer>
+
+  <KbQaWidget :language="language" />
 </template>

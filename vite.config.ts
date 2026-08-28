@@ -13,6 +13,10 @@ const rootStaticFiles = [
   'id_ed25519.pub'
 ]
 
+/** 本地开发代理目标（与 config.backendBaseUrl 保持一致） */
+const J2AGENT_PROXY_TARGET =
+  process.env.VITE_J2AGENT_PROXY_TARGET || 'https://j2agent.jerryt92.top'
+
 function copyRootStaticFiles(): Plugin {
   return {
     name: 'copy-root-static-files',
@@ -36,8 +40,38 @@ function copyRootStaticFiles(): Plugin {
 export default defineConfig(({ command }) => ({
   base: command === 'serve' ? '/' : './',
   plugins: [vue(), copyRootStaticFiles()],
+  css: {
+    preprocessorOptions: {
+      scss: {
+        api: 'modern-compiler'
+      }
+    }
+  },
+  optimizeDeps: {
+    include: ['element-plus', 'mermaid', 'lodash-es', 'markdown-it']
+  },
+  worker: {
+    format: 'es'
+  },
+  server: {
+    proxy: {
+      // 同源转发 REST / 知识库文件，规避浏览器 CORS
+      '/v1': {
+        target: J2AGENT_PROXY_TARGET,
+        changeOrigin: true,
+        secure: true
+      },
+      '/ws': {
+        target: J2AGENT_PROXY_TARGET,
+        changeOrigin: true,
+        ws: true,
+        secure: true
+      }
+    }
+  },
   build: {
     outDir: 'dist',
-    emptyOutDir: true
+    emptyOutDir: true,
+    chunkSizeWarningLimit: 2000
   }
 }))
