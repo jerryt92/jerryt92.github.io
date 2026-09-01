@@ -22,7 +22,7 @@ export const knowledgeQaConfig = {
   /** API Key（apikey-...），会打进静态站点，请使用权限受限账号 */
   apiKey:
     import.meta.env.VITE_J2AGENT_API_KEY ||
-    'apikey-AaBDnP4rdc2FoKNnSZ7cxw.KS1oZZvRsZFyriXueTAqOoW-JoEHsOr9VYKI_lvwyfg',
+    'apikey-AaBdvlwzdxaRhWgPAzuuAQ.VK5_2xz0_Nim6pBCMMITqki-xhQLopMaVQusncMm1QE',
   /** 品牌跳转地址（Powered by J2Agent） */
   brandUrl:
     import.meta.env.VITE_J2AGENT_BRAND_URL || 'https://github.com/j2agent-ai/j2agent'
