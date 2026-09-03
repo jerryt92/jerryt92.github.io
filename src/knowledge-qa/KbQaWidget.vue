@@ -700,23 +700,11 @@ function handleBubbleClick(event: MouseEvent) {
           :title="fabAriaLabel"
           @click="toggleOpen"
         >
+          <span class="kb-qa-fab-glow" aria-hidden="true" />
           <span class="kb-qa-fab-ring" aria-hidden="true" />
           <span class="kb-qa-fab-spin" aria-hidden="true" />
           <span class="kb-qa-fab-core" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="22" height="22" fill="none">
-              <path
-                d="M5 6.5A2.5 2.5 0 0 1 7.5 4H18a1 1 0 0 1 1 1v12.5a.5.5 0 0 1-.8.4L14 15H7.5A2.5 2.5 0 0 0 5 17.5V6.5Z"
-                stroke="currentColor"
-                stroke-width="1.7"
-                stroke-linejoin="round"
-              />
-              <path
-                d="M8 8h7M8 11h5"
-                stroke="currentColor"
-                stroke-width="1.7"
-                stroke-linecap="round"
-              />
-            </svg>
+            <span class="kb-qa-fab-label">AI</span>
           </span>
         </button>
       </Transition>
@@ -1105,18 +1093,27 @@ function handleBubbleClick(event: MouseEvent) {
   }
 }
 
-/* —— FAB —— */
+/* —— FAB：玻璃圆标 + 主色光晕 —— */
 .kb-qa-fab {
   position: absolute;
   right: 0;
   bottom: 0;
   width: 56px;
   height: 56px;
-  border: 1px solid var(--n-color-border-soft);
+  border: 1px solid color-mix(in srgb, var(--n-color-primary) 26%, var(--n-color-border-soft));
   border-radius: 50%;
   padding: 0;
-  background: var(--n-color-bg-glass-strong);
-  box-shadow: var(--n-shadow-elevation-3);
+  overflow: visible;
+  background:
+    radial-gradient(
+      circle at 32% 26%,
+      color-mix(in srgb, var(--n-color-primary) 32%, white),
+      color-mix(in srgb, var(--n-color-primary) 10%, var(--n-color-bg-glass-strong)) 58%,
+      var(--n-color-bg-glass-strong) 100%
+    );
+  box-shadow:
+    var(--n-shadow-elevation-3),
+    0 10px 26px color-mix(in srgb, var(--n-color-primary) 24%, transparent);
   backdrop-filter: blur(var(--n-glass-blur-3)) saturate(var(--n-glass-saturate));
   -webkit-backdrop-filter: blur(var(--n-glass-blur-3))
     saturate(var(--n-glass-saturate));
@@ -1131,13 +1128,32 @@ function handleBubbleClick(event: MouseEvent) {
 }
 
 .kb-qa-fab:hover {
-  transform: translateY(-3px) scale(1.04);
-  box-shadow: var(--n-shadow-elevation-4);
-  border-color: color-mix(in srgb, var(--n-color-primary) 35%, var(--n-color-border-soft));
+  transform: translateY(-3px) scale(1.05);
+  box-shadow:
+    var(--n-shadow-elevation-4),
+    0 14px 32px color-mix(in srgb, var(--n-color-primary) 34%, transparent);
+  border-color: color-mix(in srgb, var(--n-color-primary) 48%, var(--n-color-border-soft));
 }
 
 .kb-qa-fab:active {
   transform: translateY(-1px) scale(0.98);
+}
+
+.kb-qa-fab-glow {
+  position: absolute;
+  inset: -12px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--n-color-primary) 32%, transparent),
+    transparent 70%
+  );
+  opacity: 0.55;
+  pointer-events: none;
+  z-index: -1;
+  transition:
+    opacity 0.28s var(--kb-qa-ease),
+    transform 0.28s var(--kb-qa-ease);
 }
 
 .kb-qa-fab-ring {
@@ -1186,8 +1202,27 @@ function handleBubbleClick(event: MouseEvent) {
   transition: transform 0.28s var(--kb-qa-ease);
 }
 
+.kb-qa-fab-label {
+  font-family: ui-sans-serif, var(--n-font-display);
+  font-size: 14px;
+  font-weight: 500;
+  font-variation-settings: "wght" 520;
+  letter-spacing: 0.1em;
+  line-height: 1;
+  font-optical-sizing: auto;
+  font-kerning: normal;
+  font-feature-settings: "kern" 1;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
 .kb-qa-fab:hover .kb-qa-fab-core {
-  transform: rotate(-8deg);
+  transform: scale(1.05);
+}
+
+.kb-qa-fab:hover .kb-qa-fab-glow {
+  opacity: 0.9;
+  transform: scale(1.08);
 }
 
 @keyframes kb-qa-fab-pulse {
