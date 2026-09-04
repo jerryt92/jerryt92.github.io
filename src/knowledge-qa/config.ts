@@ -25,7 +25,7 @@ export const knowledgeQaConfig = {
     'apikey-AaBdvlwzdxaRhWgPAzuuAQ.VK5_2xz0_Nim6pBCMMITqki-xhQLopMaVQusncMm1QE',
   /** 品牌跳转地址（Powered by J2Agent） */
   brandUrl:
-    import.meta.env.VITE_J2AGENT_BRAND_URL || 'https://github.com/j2agent-ai/j2agent'
+    import.meta.env.VITE_J2AGENT_BRAND_URL || 'https://j2agent-ai.jerryt92.top/'
 } as const
 
 /** 是否走同源代理（仅 Vite 开发态） */
