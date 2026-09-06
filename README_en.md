@@ -12,11 +12,9 @@
 
 ### 🚀 My Projects
 
-- **🤖 [J2Agent](https://github.com/j2agent-ai/j2agent)**  ![GitHub Repo stars](https://img.shields.io/github/stars/j2agent-ai/j2agent?style=social)
+- **🤖 [J2Agent](https://j2agent-ai.jerryt92.top)**  ![GitHub Repo stars](https://img.shields.io/github/stars/j2agent-ai/j2agent?style=social)
 
   J2Agent is an Agent platform based on the Java ecosystem
-
-  Demo: [j2agent.jerryt92.top](https://j2agent.jerryt92.top)
 
 - **🔌 [Port Multiplexer](https://github.com/jerryt92/port-multiplexer)**
 
