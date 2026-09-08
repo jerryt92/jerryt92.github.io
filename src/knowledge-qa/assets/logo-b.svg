@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 94 32" role="img" aria-label="J2Agent AI" shape-rendering="geometricPrecision" text-rendering="geometricPrecision">
+  <rect x="1" y="1" width="30" height="30" rx="7" ry="7" fill="#2563EB"/>
+  <text
+    x="16"
+    y="16.2"
+    text-anchor="middle"
+    dominant-baseline="central"
+    alignment-baseline="central"
+    fill="#FFFFFF"
+    font-family="Segoe UI, Arial, Helvetica, sans-serif"
+    font-weight="700"
+    font-size="16"
+    letter-spacing="-0.5"
+  >J2A</text>
+  <text
+    x="34"
+    y="16.2"
+    dominant-baseline="central"
+    alignment-baseline="central"
+    fill="#111827"
+    font-family="Segoe UI, Arial, Helvetica, sans-serif"
+    font-weight="700"
+    font-size="16"
+    letter-spacing="-0.5"
+  >gent AI</text>
+</svg>

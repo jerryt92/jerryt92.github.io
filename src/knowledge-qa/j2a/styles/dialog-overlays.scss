@@ -1,0 +1,21 @@
+/* Dialog / Overlay 外壳 mixin（精简自 j2agent-ui dialog-overlays.scss） */
+
+@mixin n-dialog-border-radius {
+  border-radius: var(--n-dialog-border-radius, 16px);
+}
+
+@mixin n-overlay-dialog-shell {
+  @include n-dialog-border-radius;
+  border: 1px solid var(--n-color-border-soft);
+  background: var(--n-color-bg-elevated, #fff);
+}
+
+@mixin n-overlay-glass {
+  @include n-dialog-border-radius;
+  background: var(--n-color-bg-glass);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--n-color-border-soft);
+  isolation: isolate;
+  color: var(--n-color-text-primary);
+}
