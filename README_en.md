@@ -32,6 +32,10 @@
 
   A collection of oblique photography modeling works
 
+- **📸 [Live Photo Creator](/live-photo-creator/)**
+
+  Combine a photo and a video into an Apple Live Photo
+
 - **🔧 [Web Tools](./web-tools)**
 
 - **🔐 [JS-RSA Tools](./js_rsa_tools/)**

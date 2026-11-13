@@ -32,6 +32,10 @@
 
   存放倾斜摄影建模作品
 
+- **📸 [实况照片制作工具](/live-photo-creator/)**
+
+  将照片和视频合成为 Apple 实况照片
+
 - **🔧 [网页工具](./web-tools)**
 
 - **🔐 [JS-RSA 工具](./js_rsa_tools/)**
